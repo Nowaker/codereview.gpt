@@ -4,7 +4,9 @@
   "description": "Reviews PRs so that you can pretend to work",
   "private": true,
   "scripts": {
+    "postbuild": "node update-version.js",
     "watch": "webpack --mode=development --watch --config config/webpack.config.js",
+    "watchprod": "webpack --mode=production --watch --config config/webpack.config.js",
     "build": "webpack --mode=production --config config/webpack.config.js",
     "format": "prettier --write --ignore-unknown \"{config,public,src}/**/*.{html,css,js,ts,json}\""
   },

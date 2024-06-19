@@ -41,31 +41,55 @@ function inProgress(ongoing, failed = false, rerun = true) {
   }
 }
 
-async function getApiKey() {
-  let options = await new Promise((resolve) => {
-    chrome.storage.sync.get('openai_apikey', resolve);
+function chromeStorageSyncGet(keys) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.sync.get(keys, (items) => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+      } else {
+        resolve(items);
+      }
+    });
   });
-  console.log(options);
-  if (!options || !options['openai_apikey']) {
+}
+
+async function getSettings() {
+  const keys = ['openai_apikey', 'openai_model'];
+  const options = await chromeStorageSyncGet(keys);
+
+  if (!options.openai_apikey) {
     throw new Error("UNAUTHORIZED");
   }
-  return options['openai_apikey'];
+  return options;
 }
 
 async function callChatGPT(messages, callback, onDone) {
-  let apiKey;
+  let settings;
   try {
-    apiKey = await getApiKey();
+    settings = await getSettings();
   } catch (e) {
     callback('Please add your Open AI API key to the settings of this Chrome Extension.');
     onDone();
     return;
   }
 
-  const api = new ChatGPTAPI({
+  let apiKey = settings['openai_apikey'];
+
+  let apiSettings = {
     apiKey: apiKey,
-    systemMessage: `You are a programming code change reviewer, provide feedback on the code changes given. Do not introduce yourselves.`
-  })
+    systemMessage: `You are a programming code change reviewer, provide feedback on the code changes given. Do not introduce yourselves.`,
+  }
+
+  let model = 'default'
+
+  if (settings['openai_model']) {
+    model = settings['openai_model']
+    apiSettings.completionParams = {
+      model
+    }
+  }
+
+  const api = new ChatGPTAPI(apiSettings);
 
   let res
   let iterations = messages.length;
@@ -83,7 +107,7 @@ async function callChatGPT(messages, callback, onDone) {
       // In progress
       else {
         options = {
-          onProgress: () => callback("Processing your code changes. Number of prompts left to send: " + iterations + ". Stay tuned..."),
+          onProgress: () => callback(`Processing your code changes using ${model} model. Number of prompts left to send: ${iterations}. Stay tuned...`),
         }
       }
 
@@ -117,15 +141,6 @@ async function reviewPR(diffPath, context, title) {
   let patchParts = [];
 
   promptArray.push(`The change has the following title: ${title}.
-
-    Your task is:
-    - Review the code changes and provide feedback.
-    - If there are any bugs, highlight them.
-    - Provide details on missed use of best-practices.
-    - Does the code do what it says in the commit messages?
-    - Do not highlight minor issues and nitpicks.
-    - Use bullet points if you have multiple comments.
-    - Provide security recommendations if there are any.
 
     You are provided with the code changes (diffs) in a unidiff format.
     Do not provide feedback yet. I will follow-up with a description of the change in a new message.`
@@ -190,7 +205,20 @@ async function reviewPR(diffPath, context, title) {
     promptArray.push(part);
   });
 
-  promptArray.push("All code changes have been provided. Please provide me with your code review based on all the changes, context & title provided");
+  promptArray.push(`All code changes have been provided. Please provide me with your code review based on all the changes, context & title provided, following these guidelines:
+
+- Review the code changes and provide actionable feedback (no patting on the back).
+- Highlight any bugs.
+- Provide details on missed use of best-practices.
+- Does the code do what it says in the commit messages? If yes, highlight the discrepancy.
+- Use bullet points if you have multiple comments.
+- Provide security recommendations if there are any.
+- Do not explain what the code does.
+- When you make a recommendation, explain why, and give brief non-code examples.
+- Be specific and firm. Don't be a yes man.
+- Use two new line characters to separate each guidance.
+- The environment: a web application with multiple components like MySQL, Redis, scaled horizontally in Kubernetes across multiple replicas, running in Docker containers on Linux.
+- Think outside the box. If this is Perl, a language not often use for modern web app development, what would you say if you were reviewing an equivalent Ruby code with Puma application server? The answer has to be relevant for the language being used, but think about the principles and use cases in Ruby web applications.`);
 
   // Send our prompts to ChatGPT.
   callChatGPT(
@@ -220,9 +248,9 @@ async function run() {
   let title = tab.title
 
   // Simple verification if it would be a self-hosted GitLab instance.
-  // We verify if there is a meta tag present with the content "GitLab". 
+  // We verify if there is a meta tag present with the content "GitLab".
   let isGitLabResult = (await chrome.scripting.executeScript({
-    target:{tabId: tab.id, allFrames: true}, 
+    target:{tabId: tab.id, allFrames: true},
     func: () => { return document.querySelectorAll('meta[content="GitLab"]').length }
   }))[0];
 
@@ -239,10 +267,10 @@ async function run() {
     // The description of the author of the change
     // Fetch it by running a querySelector script specific to GitHub on the active tab
     const contextExternalResult = (await chrome.scripting.executeScript({
-      target:{tabId: tab.id, allFrames: true}, 
+      target:{tabId: tab.id, allFrames: true},
       func: () => { return document.querySelector('.markdown-body').textContent }
     }))[0];
-    
+
     if ("result" in contextExternalResult) {
       context = contextExternalResult.result;
     }
@@ -253,7 +281,7 @@ async function run() {
     // The description of the author of the change
     // Fetch it by running a querySelector script specific to GitLab on the active tab
     const contextExternalResult = (await chrome.scripting.executeScript({
-      target:{tabId: tab.id, allFrames: true}, 
+      target:{tabId: tab.id, allFrames: true},
       func: () => { return document.querySelector('.description textarea').getAttribute('data-value') }
     }))[0];
 
@@ -269,7 +297,7 @@ async function run() {
       error = 'Only GitHub or GitLab (SaaS & self-hosted) are supported.'
     }
   }
- 
+
   if (error != null) {
     document.getElementById('result').innerHTML = error
     inProgress(false, true, false);
